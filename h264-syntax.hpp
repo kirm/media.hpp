@@ -100,12 +100,75 @@ struct scaling_lists {
   std::array<std::array<std::uint8_t, 64>,6> lists_8x8;
 };
 
+struct hrd_parameters {
+  unsigned bit_rate_scale;
+  unsigned cpb_size_scale;
+  struct cpb_info {
+    unsigned bit_rate_value_minus1;
+    unsigned cpb_size_value_minus1;
+    bool cbr_flag;
+  };
+
+  std::vector<cpb_info> cpb;
+  unsigned initial_cpb_removal_delay_length_minus1;
+  unsigned cpb_removal_delay_length_minus1;
+  unsigned dpb_output_delay_length_minus1;
+  unsigned time_offset_length;
+};
+
 struct vui_params {
   struct aspect_ratio {
     std::uint16_t sar_width;
     std::uint16_t sar_height;
   };
   utils::optional<aspect_ratio> aspect_ratio_information;
+  
+  struct overscan_info_data {
+    bool overscan_appropriate;
+  };
+  utils::optional<overscan_info_data> overscan_info;
+
+  struct video_signal_type_data {
+    unsigned video_format;
+    bool video_full_range_flag;
+    struct color_description_data {
+      unsigned colour_primaries;
+      unsigned transfer_characteristics;
+      unsigned matrix_coefficients;
+    };
+    utils::optional<color_description_data> color_description;
+  };
+  utils::optional<video_signal_type_data> video_signal_type;
+
+  struct chroma_loc_info_data {
+    unsigned chroma_sample_loc_type_top_field;
+    unsigned chroma_sample_loc_type_bottom_field;
+  };
+  utils::optional<chroma_loc_info_data> chroma_loc_info;
+  
+  struct timing_info_data {
+    unsigned num_units_in_tick;
+    unsigned time_scale;
+    bool fixed_frame_rate_flag;
+  };
+  utils::optional<timing_info_data> timing_info;
+
+  utils::optional<hrd_parameters> nal_hrd_parameters;
+  utils::optional<hrd_parameters> vcl_hrd_parameters;
+  bool low_delay_hrd_flag;
+  
+  bool pic_struct_present_flag;
+
+  struct bitstream_restriction_data {
+    bool motion_vectors_over_pic_boundaries_flag;
+    unsigned max_bytes_per_pic_denom;
+    unsigned max_bits_per_mb_denom;
+    unsigned log2_max_mv_length_horizontal;
+    unsigned log2_max_mv_length_vertical;
+    unsigned max_num_reorder_frames;
+    unsigned max_dec_frame_buffering;  
+  };
+  utils::optional<bitstream_restriction_data> bitstream_restriction;
 };
 
 struct seq_parameter_set {
@@ -372,6 +435,30 @@ void parse_scaling_lists(Source& a, unsigned chroma_idc,
 }
 
 template<typename Parser>
+hrd_parameters parse_hrd_parameters(Parser& a) {
+  hrd_parameters r;
+
+  auto cpb_cnt_minus1 = ue(a);
+  r.bit_rate_scale = u(a,4);
+  r.cpb_size_scale = u(a,4);
+
+  r.cpb.resize(cpb_cnt_minus1+1);
+  
+  for(auto i = r.cpb.begin(), e = r.cpb.end(); i != e; ++i) {
+    i->bit_rate_value_minus1 = ue(a);
+    i->cpb_size_value_minus1 = ue(a);
+    i->cbr_flag = !!u(a,1);
+  }
+
+  r.initial_cpb_removal_delay_length_minus1 = u(a,5);
+  r.cpb_removal_delay_length_minus1 = u(a,5);
+  r.dpb_output_delay_length_minus1 = u(a,5);
+  r.time_offset_length = u(a,5);
+  
+  return r; 
+}
+
+template<typename Parser>
 vui_params parse_vui(Parser& a) {
   vui_params s;
   if(u(a, 1)) {
@@ -399,6 +486,55 @@ vui_params parse_vui(Parser& a) {
     }
     s.aspect_ratio_information = ari;
   }
+  
+  if(u(a,1)) {
+    s.overscan_info = vui_params::overscan_info_data{!!u(a,1)};
+  }
+
+  if(u(a,1)) {
+    auto video_format = u(a,3);
+    auto video_full_range_flag = u(a,1);
+    s.video_signal_type = vui_params::video_signal_type_data{video_format, !!video_full_range_flag};
+    if(u(a,1)) {
+      auto colour_primaries = u(a,8);
+      auto transfer_characteristics = u(a,8);
+      auto matrix_coefficients = u(a,8);
+      s.video_signal_type->color_description = vui_params::video_signal_type_data::color_description_data{colour_primaries, transfer_characteristics, matrix_coefficients};
+    }
+  }
+
+  if(u(a,1)) {
+    s.chroma_loc_info = vui_params::chroma_loc_info_data{};
+    s.chroma_loc_info->chroma_sample_loc_type_top_field = ue(a);
+    s.chroma_loc_info->chroma_sample_loc_type_bottom_field = ue(a);
+  }
+
+  if(u(a,1)) {
+    s.timing_info = vui_params::timing_info_data{};
+    s.timing_info->num_units_in_tick =  u(a,32);
+    s.timing_info->time_scale = u(a,32);
+    s.timing_info->fixed_frame_rate_flag = !!u(a,1);
+  }
+
+  if(u(a,1)) s.nal_hrd_parameters = parse_hrd_parameters(a);
+  if(u(a,1)) s.vcl_hrd_parameters = parse_hrd_parameters(a);
+
+  if(s.nal_hrd_parameters || s.vcl_hrd_parameters)
+    s.low_delay_hrd_flag = u(a,1); 
+
+  s.pic_struct_present_flag = u(a,1);
+  
+  if(u(a,1)) {
+    s.bitstream_restriction = vui_params::bitstream_restriction_data{};
+    s.bitstream_restriction->motion_vectors_over_pic_boundaries_flag = u(a,1);
+    s.bitstream_restriction->max_bytes_per_pic_denom = ue(a);
+    s.bitstream_restriction->max_bits_per_mb_denom = ue(a);
+    s.bitstream_restriction->log2_max_mv_length_horizontal = ue(a);
+    s.bitstream_restriction->log2_max_mv_length_vertical = ue(a);
+    s.bitstream_restriction->max_num_reorder_frames = ue(a);
+    s.bitstream_restriction->max_dec_frame_buffering = ue(a);
+  }
+
   return s;
 }
 
